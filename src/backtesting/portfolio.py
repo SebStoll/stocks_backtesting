@@ -7,6 +7,10 @@ import numpy as np
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 import logging
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from config.settings import get_setting
 
 logger = logging.getLogger(__name__)
 
@@ -16,17 +20,50 @@ class Portfolio:
     Manages portfolio state during backtesting.
     """
     
-    def __init__(self, initial_capital: float = 10000.0, commission: float = 0.001):
+    def __init__(
+        self, 
+        initial_capital: float = 10000.0, 
+        commission: float = 0.001,
+        trading_costs_config: Optional[Dict] = None,
+        tax_config: Optional[Dict] = None
+    ):
         """
         Initialize portfolio.
         
         Args:
             initial_capital: Starting capital
-            commission: Commission rate per trade (as decimal)
+            commission: Commission rate per trade (as decimal) - legacy parameter
+            trading_costs_config: Trading costs configuration dict
+            tax_config: Tax configuration dict
         """
         self.initial_capital = initial_capital
         self.cash = initial_capital
-        self.commission = commission
+        self.commission = commission  # Keep for backward compatibility
+        
+        # Load trading costs configuration
+        if trading_costs_config is None:
+            self.trading_costs = {
+                'cost_type': get_setting('trading_costs', 'cost_type', 'percentage'),
+                'fixed_cost_per_trade': get_setting('trading_costs', 'fixed_cost_per_trade', 10.0),
+                'percentage_cost_per_trade': get_setting('trading_costs', 'percentage_cost_per_trade', 0.002),
+                'apply_to_buy': get_setting('trading_costs', 'apply_to_buy', True),
+                'apply_to_sell': get_setting('trading_costs', 'apply_to_sell', True),
+                'currency': get_setting('trading_costs', 'currency', 'EUR')
+            }
+        else:
+            self.trading_costs = trading_costs_config
+        
+        # Load tax configuration
+        if tax_config is None:
+            self.tax_config = {
+                'tax_rate': get_setting('tax', 'tax_rate', 0.25),
+                'apply_immediately': get_setting('tax', 'apply_immediately', True),
+                'tax_on_realized_gains_only': get_setting('tax', 'tax_on_realized_gains_only', True),
+                'tax_free_threshold': get_setting('tax', 'tax_free_threshold', 0.0),
+                'currency': get_setting('tax', 'currency', 'EUR')
+            }
+        else:
+            self.tax_config = tax_config
         
         # Portfolio state
         self.positions = {}  # {symbol: shares}
@@ -39,6 +76,12 @@ class Portfolio:
         self.winning_trades = 0
         self.losing_trades = 0
         self.total_commission_paid = 0.0
+        self.total_trading_costs_paid = 0.0
+        self.total_taxes_paid = 0.0
+        
+        # Position tracking for tax calculations
+        self.position_cost_basis = {}  # {symbol: total_cost_basis}
+        self.position_shares = {}  # {symbol: total_shares}
         
     def get_position_value(self, symbol: str, current_price: float) -> float:
         """Get current value of position in symbol."""
@@ -55,8 +98,11 @@ class Portfolio:
     
     def can_buy(self, symbol: str, shares: int, price: float) -> bool:
         """Check if we can afford to buy shares."""
-        cost = shares * price * (1 + self.commission)
-        return cost <= self.cash
+        trade_value = shares * price
+        commission_cost = trade_value * self.commission
+        trading_cost = self.calculate_trading_cost(trade_value, 'BUY')
+        total_cost = trade_value + commission_cost + trading_cost
+        return total_cost <= self.cash
     
     def can_sell(self, symbol: str, shares: int) -> bool:
         """Check if we have enough shares to sell."""
@@ -79,13 +125,26 @@ class Portfolio:
             logger.warning(f"Cannot buy {shares} shares of {symbol} at {price}")
             return False
         
-        cost = shares * price * (1 + self.commission)
-        commission_paid = shares * price * self.commission
+        trade_value = shares * price
+        commission_cost = trade_value * self.commission
+        trading_cost = self.calculate_trading_cost(trade_value, 'BUY')
+        total_cost = trade_value + commission_cost + trading_cost
         
         # Update portfolio
-        self.cash -= cost
+        self.cash -= total_cost
         self.positions[symbol] = self.positions.get(symbol, 0) + shares
-        self.total_commission_paid += commission_paid
+        
+        # Update cost basis for tax calculations
+        if symbol not in self.position_cost_basis:
+            self.position_cost_basis[symbol] = 0.0
+            self.position_shares[symbol] = 0
+        
+        self.position_cost_basis[symbol] += trade_value + commission_cost + trading_cost
+        self.position_shares[symbol] += shares
+        
+        # Update tracking
+        self.total_commission_paid += commission_cost
+        self.total_trading_costs_paid += trading_cost
         
         # Record trade
         trade = {
@@ -94,15 +153,17 @@ class Portfolio:
             'action': 'BUY',
             'shares': shares,
             'price': price,
-            'cost': cost,
-            'commission': commission_paid,
+            'trade_value': trade_value,
+            'commission': commission_cost,
+            'trading_cost': trading_cost,
+            'total_cost': total_cost,
             'cash_after': self.cash,
             'portfolio_value': self.get_total_value({symbol: price})
         }
         self.trades.append(trade)
         self.total_trades += 1
         
-        logger.info(f"Bought {shares} shares of {symbol} at {price:.2f}")
+        logger.info(f"Bought {shares} shares of {symbol} at {price:.2f} (Total cost: {total_cost:.2f})")
         return True
     
     def sell(self, symbol: str, shares: int, price: float, timestamp: datetime) -> bool:
@@ -122,13 +183,46 @@ class Portfolio:
             logger.warning(f"Cannot sell {shares} shares of {symbol}")
             return False
         
-        proceeds = shares * price * (1 - self.commission)
-        commission_paid = shares * price * self.commission
+        trade_value = shares * price
+        commission_cost = trade_value * self.commission
+        trading_cost = self.calculate_trading_cost(trade_value, 'SELL')
+        gross_proceeds = trade_value - commission_cost - trading_cost
+        
+        # Calculate profit/loss for tax purposes
+        if symbol in self.position_cost_basis and self.position_shares[symbol] > 0:
+            # Calculate average cost basis per share
+            avg_cost_per_share = self.position_cost_basis[symbol] / self.position_shares[symbol]
+            cost_basis_for_sale = shares * avg_cost_per_share
+            profit = gross_proceeds - cost_basis_for_sale
+            
+            # Calculate and apply tax
+            tax_amount = self.calculate_tax(profit)
+            net_proceeds = gross_proceeds - tax_amount
+            
+            # Update cost basis (reduce by proportional amount)
+            self.position_cost_basis[symbol] -= cost_basis_for_sale
+            self.position_shares[symbol] -= shares
+            
+            # Track winning/losing trades
+            if profit > 0:
+                self.winning_trades += 1
+            else:
+                self.losing_trades += 1
+        else:
+            # No cost basis available (shouldn't happen in normal operation)
+            net_proceeds = gross_proceeds
+            profit = 0.0
+            tax_amount = 0.0
+            logger.warning(f"No cost basis available for {symbol} sale")
         
         # Update portfolio
-        self.cash += proceeds
+        self.cash += net_proceeds
         self.positions[symbol] -= shares
-        self.total_commission_paid += commission_paid
+        
+        # Update tracking
+        self.total_commission_paid += commission_cost
+        self.total_trading_costs_paid += trading_cost
+        self.total_taxes_paid += tax_amount
         
         # Record trade
         trade = {
@@ -137,31 +231,20 @@ class Portfolio:
             'action': 'SELL',
             'shares': shares,
             'price': price,
-            'proceeds': proceeds,
-            'commission': commission_paid,
+            'trade_value': trade_value,
+            'commission': commission_cost,
+            'trading_cost': trading_cost,
+            'gross_proceeds': gross_proceeds,
+            'profit': profit,
+            'tax_paid': tax_amount,
+            'net_proceeds': net_proceeds,
             'cash_after': self.cash,
             'portfolio_value': self.get_total_value({symbol: price})
         }
         self.trades.append(trade)
         self.total_trades += 1
         
-        # Track winning/losing trades
-        if symbol in self.positions and self.positions[symbol] == 0:
-            # Calculate P&L for this position
-            buy_trades = [t for t in self.trades if t['symbol'] == symbol and t['action'] == 'BUY']
-            sell_trades = [t for t in self.trades if t['symbol'] == symbol and t['action'] == 'SELL']
-            
-            if buy_trades and sell_trades:
-                total_buy_cost = sum(t['cost'] for t in buy_trades)
-                total_sell_proceeds = sum(t['proceeds'] for t in sell_trades)
-                pnl = total_sell_proceeds - total_buy_cost
-                
-                if pnl > 0:
-                    self.winning_trades += 1
-                else:
-                    self.losing_trades += 1
-        
-        logger.info(f"Sold {shares} shares of {symbol} at {price:.2f}")
+        logger.info(f"Sold {shares} shares of {symbol} at {price:.2f} (Net proceeds: {net_proceeds:.2f}, Tax: {tax_amount:.2f})")
         return True
     
     def update_portfolio_value(self, current_prices: Dict[str, float], timestamp: datetime):
@@ -174,13 +257,57 @@ class Portfolio:
             'positions': self.positions.copy(),
             'portfolio_value': self.portfolio_value,
             'total_trades': self.total_trades,
-            'total_commission_paid': self.total_commission_paid
+            'total_commission_paid': self.total_commission_paid,
+            'total_trading_costs_paid': self.total_trading_costs_paid,
+            'total_taxes_paid': self.total_taxes_paid
         }
         self.portfolio_history.append(portfolio_snapshot)
     
     def get_position_size(self, symbol: str) -> int:
         """Get current position size for symbol."""
         return self.positions.get(symbol, 0)
+    
+    def calculate_trading_cost(self, trade_value: float, action: str) -> float:
+        """
+        Calculate trading cost for a trade.
+        
+        Args:
+            trade_value: Value of the trade (shares * price)
+            action: 'BUY' or 'SELL'
+            
+        Returns:
+            Trading cost amount
+        """
+        if action == 'BUY' and not self.trading_costs['apply_to_buy']:
+            return 0.0
+        if action == 'SELL' and not self.trading_costs['apply_to_sell']:
+            return 0.0
+        
+        if self.trading_costs['cost_type'] == 'fixed':
+            return self.trading_costs['fixed_cost_per_trade']
+        elif self.trading_costs['cost_type'] == 'percentage':
+            return trade_value * self.trading_costs['percentage_cost_per_trade']
+        else:
+            return 0.0
+    
+    def calculate_tax(self, profit: float) -> float:
+        """
+        Calculate tax on profit.
+        
+        Args:
+            profit: Profit amount (can be negative for losses)
+            
+        Returns:
+            Tax amount to be paid
+        """
+        if not self.tax_config['apply_immediately']:
+            return 0.0
+        
+        if profit <= self.tax_config['tax_free_threshold']:
+            return 0.0
+        
+        taxable_profit = profit - self.tax_config['tax_free_threshold']
+        return max(0.0, taxable_profit * self.tax_config['tax_rate'])
     
     def get_cash_ratio(self) -> float:
         """Get ratio of cash to total portfolio value."""
@@ -209,3 +336,7 @@ class Portfolio:
         self.winning_trades = 0
         self.losing_trades = 0
         self.total_commission_paid = 0.0
+        self.total_trading_costs_paid = 0.0
+        self.total_taxes_paid = 0.0
+        self.position_cost_basis = {}
+        self.position_shares = {}

@@ -24,6 +24,25 @@ BACKTEST_SETTINGS = {
     'trading_days_per_year': 252
 }
 
+# Trading costs settings
+TRADING_COSTS = {
+    'cost_type': 'percentage',  # 'fixed' or 'percentage'
+    'fixed_cost_per_trade': 10.0,  # Fixed cost in EUR/USD per trade
+    'percentage_cost_per_trade': 0.002,  # 0.2% of trade value
+    'apply_to_buy': True,  # Apply costs to buy trades
+    'apply_to_sell': True,  # Apply costs to sell trades
+    'currency': 'EUR'  # Currency for fixed costs
+}
+
+# Tax settings
+TAX_SETTINGS = {
+    'tax_rate': 0.25,  # 25% tax rate on profits
+    'apply_immediately': True,  # Apply tax immediately on profitable trades
+    'tax_on_realized_gains_only': True,  # Only tax realized gains (not unrealized)
+    'tax_free_threshold': 0.0,  # Tax-free threshold amount
+    'currency': 'EUR'  # Currency for tax calculations
+}
+
 # Strategy settings
 STRATEGY_SETTINGS = {
     'default_short_window': 20,
@@ -83,6 +102,8 @@ def get_setting(category: str, key: str, default: Any = None) -> Any:
     settings_map = {
         'data': DATA_SETTINGS,
         'backtest': BACKTEST_SETTINGS,
+        'trading_costs': TRADING_COSTS,
+        'tax': TAX_SETTINGS,
         'strategy': STRATEGY_SETTINGS,
         'plot': PLOT_SETTINGS,
         'logging': LOGGING_SETTINGS,
@@ -110,6 +131,8 @@ def update_setting(category: str, key: str, value: Any) -> bool:
     settings_map = {
         'data': DATA_SETTINGS,
         'backtest': BACKTEST_SETTINGS,
+        'trading_costs': TRADING_COSTS,
+        'tax': TAX_SETTINGS,
         'strategy': STRATEGY_SETTINGS,
         'plot': PLOT_SETTINGS,
         'logging': LOGGING_SETTINGS,
