@@ -3,7 +3,6 @@ Portfolio management for backtesting.
 """
 
 import pandas as pd
-import numpy as np
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 import logging
@@ -23,7 +22,6 @@ class Portfolio:
     def __init__(
         self, 
         initial_capital: float = 10000.0, 
-        commission: float = 0.001,
         trading_costs_config: Optional[Dict] = None,
         tax_config: Optional[Dict] = None
     ):
@@ -32,13 +30,11 @@ class Portfolio:
         
         Args:
             initial_capital: Starting capital
-            commission: Commission rate per trade (as decimal) - legacy parameter
             trading_costs_config: Trading costs configuration dict
             tax_config: Tax configuration dict
         """
         self.initial_capital = initial_capital
         self.cash = initial_capital
-        self.commission = commission  # Keep for backward compatibility
         
         # Load trading costs configuration
         if trading_costs_config is None:
@@ -75,7 +71,6 @@ class Portfolio:
         self.total_trades = 0
         self.winning_trades = 0
         self.losing_trades = 0
-        self.total_commission_paid = 0.0
         self.total_trading_costs_paid = 0.0
         self.total_taxes_paid = 0.0
         
@@ -99,9 +94,8 @@ class Portfolio:
     def can_buy(self, symbol: str, shares: int, price: float) -> bool:
         """Check if we can afford to buy shares."""
         trade_value = shares * price
-        commission_cost = trade_value * self.commission
         trading_cost = self.calculate_trading_cost(trade_value, 'BUY')
-        total_cost = trade_value + commission_cost + trading_cost
+        total_cost = trade_value + trading_cost
         return total_cost <= self.cash
     
     def can_sell(self, symbol: str, shares: int) -> bool:
@@ -126,9 +120,8 @@ class Portfolio:
             return False
         
         trade_value = shares * price
-        commission_cost = trade_value * self.commission
         trading_cost = self.calculate_trading_cost(trade_value, 'BUY')
-        total_cost = trade_value + commission_cost + trading_cost
+        total_cost = trade_value + trading_cost
         
         # Update portfolio
         self.cash -= total_cost
@@ -139,11 +132,10 @@ class Portfolio:
             self.position_cost_basis[symbol] = 0.0
             self.position_shares[symbol] = 0
         
-        self.position_cost_basis[symbol] += trade_value + commission_cost + trading_cost
+        self.position_cost_basis[symbol] += trade_value + trading_cost
         self.position_shares[symbol] += shares
         
         # Update tracking
-        self.total_commission_paid += commission_cost
         self.total_trading_costs_paid += trading_cost
         
         # Record trade
@@ -154,7 +146,7 @@ class Portfolio:
             'shares': shares,
             'price': price,
             'trade_value': trade_value,
-            'commission': commission_cost,
+            'commission': trading_cost,
             'trading_cost': trading_cost,
             'total_cost': total_cost,
             'cash_after': self.cash,
@@ -184,9 +176,8 @@ class Portfolio:
             return False
         
         trade_value = shares * price
-        commission_cost = trade_value * self.commission
         trading_cost = self.calculate_trading_cost(trade_value, 'SELL')
-        gross_proceeds = trade_value - commission_cost - trading_cost
+        gross_proceeds = trade_value - trading_cost
         
         # Calculate profit/loss for tax purposes
         if symbol in self.position_cost_basis and self.position_shares[symbol] > 0:
@@ -220,7 +211,6 @@ class Portfolio:
         self.positions[symbol] -= shares
         
         # Update tracking
-        self.total_commission_paid += commission_cost
         self.total_trading_costs_paid += trading_cost
         self.total_taxes_paid += tax_amount
         
@@ -232,7 +222,7 @@ class Portfolio:
             'shares': shares,
             'price': price,
             'trade_value': trade_value,
-            'commission': commission_cost,
+            'commission': trading_cost,
             'trading_cost': trading_cost,
             'gross_proceeds': gross_proceeds,
             'profit': profit,
@@ -257,7 +247,6 @@ class Portfolio:
             'positions': self.positions.copy(),
             'portfolio_value': self.portfolio_value,
             'total_trades': self.total_trades,
-            'total_commission_paid': self.total_commission_paid,
             'total_trading_costs_paid': self.total_trading_costs_paid,
             'total_taxes_paid': self.total_taxes_paid
         }
@@ -335,7 +324,6 @@ class Portfolio:
         self.total_trades = 0
         self.winning_trades = 0
         self.losing_trades = 0
-        self.total_commission_paid = 0.0
         self.total_trading_costs_paid = 0.0
         self.total_taxes_paid = 0.0
         self.position_cost_basis = {}

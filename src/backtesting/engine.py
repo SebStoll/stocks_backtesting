@@ -22,7 +22,6 @@ class BacktestEngine:
     def __init__(
         self,
         initial_capital: float = 10000.0,
-        commission: float = 0.001,
         benchmark_symbol: Optional[str] = None,
         trading_costs_config: Optional[Dict] = None,
         tax_config: Optional[Dict] = None
@@ -32,17 +31,14 @@ class BacktestEngine:
         
         Args:
             initial_capital: Starting capital
-            commission: Commission rate per trade (legacy parameter)
             benchmark_symbol: Symbol to use as benchmark
             trading_costs_config: Trading costs configuration
             tax_config: Tax configuration
         """
         self.initial_capital = initial_capital
-        self.commission = commission
         self.benchmark_symbol = benchmark_symbol
         self.portfolio = Portfolio(
             initial_capital, 
-            commission, 
             trading_costs_config, 
             tax_config
         )
@@ -147,7 +143,7 @@ class BacktestEngine:
             if signal == 'BUY' and current_position == 0:
                 # Calculate position size (simplified - use all available cash)
                 available_cash = self.portfolio.cash * 0.95  # Leave 5% buffer
-                shares_to_buy = int(available_cash / (current_price * (1 + self.commission)))
+                shares_to_buy = int(available_cash / current_price)
                 
                 if shares_to_buy > 0:
                     self.portfolio.buy(symbol, shares_to_buy, current_price, timestamp)
@@ -202,7 +198,7 @@ class BacktestResults:
             'max_drawdown': self._calculate_max_drawdown(portfolio_values),
             'win_rate': self.portfolio.winning_trades / max(self.portfolio.total_trades, 1),
             'total_trades': self.portfolio.total_trades,
-            'total_commission_paid': self.portfolio.total_commission_paid,
+            'total_commission_paid': self.portfolio.total_trading_costs_paid,
             'total_trading_costs_paid': self.portfolio.total_trading_costs_paid,
             'total_taxes_paid': self.portfolio.total_taxes_paid,
             'final_portfolio_value': portfolio_values[-1]

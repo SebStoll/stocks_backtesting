@@ -75,25 +75,6 @@ class BaseStrategy(ABC):
             else:
                 logger.warning(f"Unknown parameter: {key}")
     
-    def validate_data(self, data: pd.DataFrame) -> bool:
-        """
-        Validate that data has required columns.
-        Override in subclasses to add specific validation.
-        
-        Args:
-            data: Data to validate
-            
-        Returns:
-            True if data is valid, False otherwise
-        """
-        required_columns = ['open', 'high', 'low', 'close', 'volume']
-        missing_columns = [col for col in required_columns if col not in data.columns]
-        
-        if missing_columns:
-            logger.error(f"Missing required columns: {missing_columns}")
-            return False
-        
-        return True
     
     def __str__(self):
         return f"{self.name}({self.get_parameters()})"
