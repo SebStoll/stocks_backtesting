@@ -76,11 +76,13 @@ class BacktestEngine:
         # Reset portfolio
         self.portfolio.reset()
         
-        # Initialize strategy
+        # Reset and initialize strategy
+        if hasattr(strategy, 'reset'):
+            strategy.reset()
         strategy.initialize(data)
         
-        # Get symbols from data
-        symbols = self._extract_symbols(data)
+        # Get symbols from strategy
+        symbols = self._get_symbols_from_strategy(strategy)
         
         # Run backtest
         for i, (timestamp, row) in enumerate(data.iterrows()):
@@ -110,11 +112,22 @@ class BacktestEngine:
         logger.info(f"Backtest completed. Final portfolio value: {self.portfolio.portfolio_value:.2f}")
         return results
     
+    def _get_symbols_from_strategy(self, strategy: BaseStrategy) -> List[str]:
+        """Get symbols from strategy parameters."""
+        # Try to get symbol from strategy parameters
+        params = strategy.get_parameters()
+        if 'symbol' in params:
+            return [params['symbol']]
+        
+        # Fallback to generic symbol
+        return ['SYMBOL']
+    
     def _extract_symbols(self, data: pd.DataFrame) -> List[str]:
         """Extract symbols from data columns."""
         # For single symbol strategies, we need to get the symbol from the strategy
         # This is a simplified approach - in practice, you might have multi-symbol data
-        return ['AAPL']  # For now, hardcode to AAPL since that's what we're testing
+        # We'll use a generic symbol that strategies can use
+        return ['SYMBOL']  # Generic symbol that strategies can use
     
     def _get_current_prices(self, row: pd.Series, symbols: List[str]) -> Dict[str, float]:
         """Get current prices for all symbols."""
@@ -135,18 +148,36 @@ class BacktestEngine:
         """Execute trades based on strategy signals."""
         for symbol, signal in signals.items():
             if symbol not in current_prices:
+                logger.warning(f"Symbol {symbol} not found in current_prices: {list(current_prices.keys())}")
                 continue
                 
             current_price = current_prices[symbol]
             current_position = self.portfolio.get_position_size(symbol)
             
             if signal == 'BUY' and current_position == 0:
-                # Calculate position size (simplified - use all available cash)
+                # Calculate position size accounting for trading costs
                 available_cash = self.portfolio.cash * 0.95  # Leave 5% buffer
+                
+                # Start with a reasonable estimate and adjust if needed
                 shares_to_buy = int(available_cash / current_price)
                 
+                # If we have trading costs, we need to find the maximum shares we can afford
                 if shares_to_buy > 0:
-                    self.portfolio.buy(symbol, shares_to_buy, current_price, timestamp)
+                    # Check if we can afford this many shares with costs
+                    while shares_to_buy > 0:
+                        trade_value = shares_to_buy * current_price
+                        trading_cost = self.portfolio.calculate_trading_cost(trade_value, 'BUY')
+                        total_cost = trade_value + trading_cost
+                        
+                        if total_cost <= available_cash:
+                            # We can afford this many shares
+                            break
+                        else:
+                            # Reduce shares and try again
+                            shares_to_buy -= 1
+                    
+                    if shares_to_buy > 0:
+                        self.portfolio.buy(symbol, shares_to_buy, current_price, timestamp)
                     
             elif signal == 'SELL' and current_position > 0:
                 self.portfolio.sell(symbol, current_position, current_price, timestamp)
