@@ -12,7 +12,17 @@ DATA_SETTINGS = {
     'default_end_date': '2023-01-01',
     'default_interval': '1d',
     'cache_enabled': True,
-    'cache_size_limit': 100  # MB
+    'cache_size_limit': 100,  # MB
+    'default_data_source': 'yahoo_finance'
+}
+
+# Data source settings
+DATA_SOURCE_SETTINGS = {
+    'yahoo_finance': {
+        'timeout': 10,
+        'max_retries': 3,
+        'retry_delay': 1.0
+    }
 }
 
 # Backtesting settings
@@ -101,6 +111,7 @@ def get_setting(category: str, key: str, default: Any = None) -> Any:
     """
     settings_map = {
         'data': DATA_SETTINGS,
+        'data_source': DATA_SOURCE_SETTINGS,
         'backtest': BACKTEST_SETTINGS,
         'trading_costs': TRADING_COSTS,
         'tax': TAX_SETTINGS,
@@ -130,6 +141,7 @@ def update_setting(category: str, key: str, value: Any) -> bool:
     """
     settings_map = {
         'data': DATA_SETTINGS,
+        'data_source': DATA_SOURCE_SETTINGS,
         'backtest': BACKTEST_SETTINGS,
         'trading_costs': TRADING_COSTS,
         'tax': TAX_SETTINGS,
